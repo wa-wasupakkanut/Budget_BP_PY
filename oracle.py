@@ -73,6 +73,32 @@ def test_connection(connection_string):
         print("4. Install ODBC Driver 17 for SQL Server")
         return False
 
+def format_text_value(value):
+    """แปลงค่าเป็น string และรักษารูปแบบเดิมไว้"""
+    if pd.isna(value) or value is None:
+        return None
+    
+    # แปลงเป็น string ก่อน
+    str_value = str(value)
+    
+    # ถ้าเป็น scientific notation ให้แปลงกลับเป็นตัวเลขปกติ
+    if 'e+' in str_value.lower() or 'e-' in str_value.lower():
+        try:
+            # แปลงเป็น int ก่อนแล้วแปลงเป็น string เพื่อเอา decimal ออก
+            numeric_value = float(str_value)
+            if numeric_value.is_integer():
+                str_value = str(int(numeric_value))
+            else:
+                str_value = str(numeric_value)
+        except:
+            pass
+    
+    # ลบ .0 ออกถ้ามี
+    if str_value.endswith('.0'):
+        str_value = str_value[:-2]
+    
+    return str_value
+
 def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_string=None):
     if connection_string is None:
         connection_string = get_connection_string()
@@ -101,14 +127,16 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
             usecols=[1, 2, 7, 8, 9, 10, 16, 17, 23, 24, 26, 27, 28, 29, 34, 35, 36],
             skiprows=start_row - 1,
             header=0,
-            nrows=1
+            nrows=1,
+            dtype=str  # อ่านทุกคอลัมน์เป็น string
         )
         df_full = pd.read_excel(
             'oracle.xlsx',
             sheet_name='oracle',
             usecols=[1],
             skiprows=start_row,
-            header=None
+            header=None,
+            dtype=str  # อ่านเป็น string
         )
         df_full = df_full.dropna()
         total_rows = len(df_full)
@@ -167,12 +195,6 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
         print("STARTING BATCH PROCESSING")
         print(f"{'='*60}")
 
-        # Remove combined_account_code if not in DB
-        # You can get real column list from DB with the below if needed:
-        # cursor.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'oracle'")
-        # print([row[0] for row in cursor.fetchall()])
-        # For now, we remove combined_account_code from insert and df
-
         insert_columns = [
             'period', 'period_year', 'period_month', 'period_sort', 'date',
             'invoice_no', 'account_code', 'account_name', 'sub_account_code',
@@ -188,14 +210,17 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
             print(f"\nBatch {batch_num + 1}/{total_batches}: Processing rows {start_idx + 1:,} to {end_idx:,} ({current_batch_size:,} records)")
 
             try:
+                # อ่านข้อมูลทั้งหมดเป็น string ก่อน
                 df = pd.read_excel(
                     'oracle.xlsx',
                     sheet_name='oracle',
                     usecols=[1, 2, 7, 8, 9, 10, 16, 17, 23, 24, 26, 27, 28, 29, 34, 35, 36],
                     skiprows=start_row + start_idx,
                     header=0 if batch_num == 0 else None,
-                    nrows=current_batch_size
+                    nrows=current_batch_size,
+                    dtype=str  # อ่านทุกคอลัมน์เป็น string
                 )
+                
                 if batch_num > 0:
                     df.columns = list(column_mapping.keys())
                 df = df.dropna(how='all')
@@ -203,15 +228,38 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
                     print(f"  Batch {batch_num + 1}: No data, skipping...")
                     continue
                 df = df.rename(columns=column_mapping)
+                
+                # ประมวลผล period
                 df[['period_year', 'period_month', 'period_sort']] = df['period'].apply(
                     lambda x: pd.Series(process_period(x))
                 )
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
-                df['debit_accounted_amount'] = pd.to_numeric(df['debit_accounted_amount'], errors='coerce').fillna(0)
-                df['credit_accounted_amount'] = pd.to_numeric(df['credit_accounted_amount'], errors='coerce').fillna(0)
-                # df['combined_account_code'] = df['account_code'].astype(str) + '-' + df['sub_account_code'].astype(str) # REMOVE
-
-                # ไม่ต้อง map cost_center_id, account_id, ไม่ต้องสร้าง combined_account_code
+                
+                # จัดการคอลัมน์ที่ต้องการรูปแบบพิเศษ
+                # Sub Account Code - รักษารูปแบบเดิม
+                df['sub_account_code'] = df['sub_account_code'].apply(format_text_value)
+                
+                # Supplier Site Code - รักษารูปแบบเดิม
+                df['supplier_site_code'] = df['supplier_site_code'].apply(format_text_value)
+                
+                # จัดการ date
+                try:
+                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                except:
+                    df['date'] = None
+                
+                # จัดการตัวเลขสำหรับ amount
+                def safe_numeric_convert(value):
+                    if pd.isna(value) or value is None or str(value).strip() == '':
+                        return 0
+                    try:
+                        # ลบ comma ออกก่อน
+                        str_value = str(value).replace(',', '')
+                        return float(str_value)
+                    except:
+                        return 0
+                
+                df['debit_accounted_amount'] = df['debit_accounted_amount'].apply(safe_numeric_convert)
+                df['credit_accounted_amount'] = df['credit_accounted_amount'].apply(safe_numeric_convert)
 
                 df_insert = df[insert_columns]
 
@@ -233,6 +281,9 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
                                 values.append(None)
                             elif col in ['debit_accounted_amount', 'credit_accounted_amount']:
                                 values.append(float(value) if value != 0 else None)
+                            elif col in ['sub_account_code', 'supplier_site_code']:
+                                # รักษารูปแบบเป็น string
+                                values.append(format_text_value(value))
                             else:
                                 values.append(value)
                         cursor.execute(insert_sql, tuple(values))
@@ -240,6 +291,7 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
                     except Exception as e:
                         print(f"    Error in row {total_processed + index + 1}: {str(e)[:100]}...")
                         batch_errors += 1
+                
                 conn.commit()
                 total_processed += len(df_insert)
                 total_success += batch_success
@@ -248,6 +300,7 @@ def import_excel_to_oracle_table(batch_size=1000, start_row=12, connection_strin
                 total_credit += df['credit_accounted_amount'].sum()
                 print(f"  ✅ Batch {batch_num + 1}: Success={batch_success:,}, Errors={batch_errors:,}")
                 print(f"  💰 Batch Amount: Debit={df['debit_accounted_amount'].sum():,.2f}, Credit={df['credit_accounted_amount'].sum():,.2f}")
+            
             except Exception as e:
                 print(f"  ❌ Batch {batch_num + 1} failed: {e}")
                 total_errors += current_batch_size
@@ -289,16 +342,19 @@ def analyze_excel_file(file_path='oracle.xlsx', start_row=12):
             usecols=[1],
             skiprows=start_row,
             header=None,
-            nrows=10000
+            nrows=10000,
+            dtype=str
         )
         df_sample = df_sample.dropna()
         sample_rows = len(df_sample)
+        
         import openpyxl
         workbook = openpyxl.load_workbook(file_path, read_only=True)
         worksheet = workbook.active
         max_row = worksheet.max_row
         estimated_data_rows = max_row - start_row - 1
         oracle_data_rows = min(sample_rows, estimated_data_rows)
+        
         print(f"📁 File: {file_path}")
         print(f"📊 Estimated data rows: {estimated_data_rows:,}")
         print(f"📊 Sample data rows: {sample_rows:,}")
@@ -312,10 +368,12 @@ if __name__ == "__main__":
     print("Excel to SQL Server Import Tool")
     print("Support unlimited rows with batch processing and flexible authentication")
     print("-" * 80)
+    
     try:
         analyze_excel_file()
     except Exception as e:
         print(f"Warning: Could not analyze file - {e}")
+    
     print(f"\n{'='*60}")
     print("DATABASE AUTHENTICATION")
     print(f"{'='*60}")
@@ -323,6 +381,7 @@ if __name__ == "__main__":
     if connection_string is None:
         print("❌ Cannot proceed without authentication")
         exit(1)
+    
     print(f"\n{'='*60}")
     print("BATCH SIZE CONFIGURATION")
     print(f"{'='*60}")
@@ -332,10 +391,12 @@ if __name__ == "__main__":
     print("3. Large files (10,000 - 30,000 rows): 2,000")
     print("4. Very large files (> 30,000 rows): 5,000")
     print("5. Custom size")
+    
     try:
         batch_choice = input("\nSelect batch size option (1-5, default: 2): ").strip()
         if not batch_choice:
             batch_choice = "2"
+        
         if batch_choice == "1":
             batch_size = 500
         elif batch_choice == "2":
@@ -351,17 +412,21 @@ if __name__ == "__main__":
             batch_size = 1000
     except:
         batch_size = 1000
+    
     print(f"\n🚀 Starting import with batch size: {batch_size:,}")
     print(f"Connection: SQL Server Authentication")
+    
     confirm = input(f"\nProceed with import? (y/N): ").strip().lower()
     if confirm not in ['y', 'yes']:
         print("Import cancelled by user")
         exit(0)
+    
     success = import_excel_to_oracle_table(
         batch_size=batch_size,
         start_row=12,
         connection_string=connection_string
     )
+    
     if success:
         print("\n🎉 Process completed successfully!")
     else:
