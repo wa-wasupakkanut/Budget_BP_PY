@@ -90,9 +90,15 @@ CREATE TABLE expense (
     activity_name NVARCHAR(255),
     project_no VARCHAR(50),
     item_no INT,
-    unique_field VARCHAR(100),  -- 'unique' is a reserved word in SQL, so renamed to 'unique_field'
+    unique VARCHAR(100),
     month date,
     plan DECIMAL(18,2)
+    targe_reduction INT,
+    ratio_plan_MC DECIMAL(18,2),
+    ratio_result_MC DECIMAL(18,2),
+    ratio_plan_ASSY DECIMAL(18,2),
+    ratio_result_ASSY DECIMAL(18,2)
+
 );
 ----------------------------------------------------------------------------
 CREATE TABLE actual (
@@ -122,7 +128,7 @@ CREATE TABLE master (
     plan                      DECIMAL(18,2)
 );
 ------------------------------------------------------------------
-DELETE FROM oracle;
+DELETE FROM expense;
 
 ALTER TABLE oracle
 DROP COLUMN actual;
