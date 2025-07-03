@@ -54,9 +54,9 @@ def convert_to_long_format(df):
 
 def save_master_file(df_long, output_path):
     """
-    บันทึกไฟล์หลักโดยใช้ชื่อไฟล์ Expense_Final_Long_Format2.xlsx
+    บันทึกไฟล์หลักโดยใช้ชื่อไฟล์ Expense_Final_Long_Format.xlsx
     """
-    master_file_path = os.path.join(output_path, "Expense_Final_Long_Format2.xlsx")
+    master_file_path = os.path.join(output_path, "Expense_Final_Long_Format.xlsx")
     try:
         df_long.to_excel(master_file_path, index=False)
         print(f"✅ ไฟล์หลักถูกบันทึกที่: {master_file_path}")
